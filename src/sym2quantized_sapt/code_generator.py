@@ -186,11 +186,17 @@ def _get_code_str(
 
 def _is_eri(tensor: TensorSymbol) -> bool:
     """
-    `v` is the intermolecular two-electron integral, the only tensor the
-    density-fitting split applies to. The monomer potentials print as `v_A`
-    and `v_B` and are left alone, as are `s`, `e` and every amplitude.
+    The two-electron integrals the density-fitting split applies to: `v`,
+    the intermolecular interaction integral, and `w`, the intramonomer one
+    (`w^{p p'}_{q q'} = (q p | q' p')`, all four indices on one monomer).
+    Both factorize by the same positional pairing - lower slot k with upper
+    slot k - which `_check_eri_indices` guards: for `v` each pair must sit
+    on one monomer (A first by `get_V_operator`'s order), and a `w` pair
+    straddling monomers is rejected the same way. The monomer potentials
+    print as `v_A` and `v_B` and are left alone, as are `s`, `e` and every
+    amplitude.
     """
-    return str(tensor.symbol) == "v"
+    return str(tensor.symbol) in ("v", "w")
 
 
 def _monomer_of(index) -> str:
@@ -246,6 +252,17 @@ def _check_eri_indices(tensor: TensorSymbol) -> None:
             f"Code generator: density fitting expected each pair of indices "
             f"of tensor {str(tensor)} on one monomer, got "
             f"{pairs[0][0]}{pairs[0][1]} and {pairs[1][0]}{pairs[1][1]}."
+        )
+
+    # `w` is the *intramonomer* integral: all four indices on one monomer.
+    # A per-pair check cannot catch a `w` split v-style across A and B, so
+    # guard it separately.
+    monomers = {m for pair in pairs for m in pair if m}
+    if str(tensor.symbol) == "w" and len(monomers) > 1:
+        raise IndexError(
+            f"Code generator: density fitting expected the intramonomer "
+            f"tensor {str(tensor)} on a single monomer, got "
+            f"{''.join(sorted(monomers))}."
         )
 
 

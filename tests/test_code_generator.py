@@ -700,3 +700,79 @@ def test_density_fitting_does_not_drop_a_squared_eri():
     assert '+2 * np.einsum("", )' != generate_einsum(
         2.0 * v * v, density_fitting=True
     )
+
+
+# --------------------------------------------------------------------------
+# density fitting of the intramonomer `w`
+#
+# `w^{p p'}_{q q'} = (q p | q' p')` carries all four indices on one monomer
+# and factorizes by the same positional pairing as `v`:
+# `sum_Q B^{Q}_{q p} B^{Q}_{q' p'}`.
+# --------------------------------------------------------------------------
+
+
+def _intra_indices():
+    """four distinct monomer-A indices, two occupied and two virtual"""
+    a = symbols("a", is_molA=True, above_fermi=True)
+    c = symbols("c", is_molA=True, above_fermi=True)
+    i = symbols("i", is_molA=True, below_fermi=True)
+    k = symbols("k", is_molA=True, below_fermi=True)
+
+    return a, c, i, k
+
+
+def test_density_fitting_splits_w_into_two_three_index_arrays():
+    reference = """+np.einsum("rcak,Qar,Qkc", t_rcak, Qar, Qkc)"""
+
+    a, c, i, k = _intra_indices()
+
+    t = DoubleVacuumTensorSymbol("t", (i, k), (a, c))
+    w = DoubleVacuumTensorSymbol("w", (a, c), (i, k))
+
+    assert reference == generate_einsum(t * w, density_fitting=True)
+
+
+def test_density_fitting_v_and_w_get_separate_auxiliary_indices():
+    # one term holding both integrals is two independent auxiliary sums
+    reference = (
+        """+np.einsum("rsab,rcak,Qar,Qbs,Par,Pkc", """
+        """t_rsab, t_rcak, Qar, Qbs, Qar, Qkc)"""
+    )
+
+    a, c, i, k = _intra_indices()
+    b = symbols("b", is_molB=True, above_fermi=True)
+    j = symbols("j", is_molB=True, below_fermi=True)
+
+    t4 = DoubleVacuumTensorSymbol("t", (i, j), (a, b))
+    t2 = DoubleVacuumTensorSymbol("t", (i, k), (a, c))
+    v = DoubleVacuumTensorSymbol("v", (a, b), (i, j))
+    w = DoubleVacuumTensorSymbol("w", (a, c), (i, k))
+
+    assert reference == generate_einsum(
+        t4 * w * v * t2, density_fitting=True
+    )
+
+
+def test_density_fitting_rejects_a_w_straddling_monomers():
+    # each pair sitting on one monomer is the *v* pattern; an intramonomer
+    # `w` split across A and B denotes a different integral and must raise
+    a, c, i, k = _intra_indices()
+    b = symbols("b", is_molB=True, above_fermi=True)
+    j = symbols("j", is_molB=True, below_fermi=True)
+
+    t4 = DoubleVacuumTensorSymbol("t", (i, j), (a, b))
+    w_bad = DoubleVacuumTensorSymbol("w", (a, b), (i, j))
+
+    with pytest.raises(IndexError, match="single monomer"):
+        generate_einsum(t4 * w_bad, density_fitting=True)
+
+
+def test_density_fitting_w_unchanged_without_the_option():
+    a, c, i, k = _intra_indices()
+
+    t = DoubleVacuumTensorSymbol("t", (i, k), (a, c))
+    w = DoubleVacuumTensorSymbol("w", (a, c), (i, k))
+
+    assert '+np.einsum("rcak,akrc", t_rcak, w_akrc)' == generate_einsum(
+        t * w
+    )
