@@ -71,12 +71,21 @@ def test_run_example(example_file: pathlib.Path, tmp_path: pathlib.Path):
     # copy the file to tmp_path
     shutil.copyfile(source_file, target_file)
 
-    # run as a subprocess call
+    # run as a subprocess call, importing the package from THIS
+    # checkout: the editable install may point at another checkout
+    # (e.g. main while a feature branch is under test), which would
+    # silently run the examples against the wrong code
+    environment = dict(os.environ)
+    checkout_src = str(pathlib.Path(__file__).parents[1] / "src")
+    environment["PYTHONPATH"] = os.pathsep.join(
+        [checkout_src] + environment.get("PYTHONPATH", "").split(os.pathsep)
+    ).rstrip(os.pathsep)
     completed_run = subprocess.run(
         [sys.executable, target_file],
         capture_output=True,
         check=False,
         text=True,
+        env=environment,
     )
     try:
         # assert script didn't crash

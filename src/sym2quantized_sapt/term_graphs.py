@@ -90,10 +90,13 @@ class Node:
 
 @dataclass(frozen=True)
 class Edge:
-    """A dummy index joining two ports: ``(node, port)`` pairs plus the
-    index character.  Self-loops (both ports on one tensor) are legal."""
+    """A dummy index joining two or more ports (``(node, port)`` pairs)
+    plus the index character.  Two ports is an ordinary Einstein
+    contraction; more is a Hadamard-style hyperedge -- a resolvent
+    denominator sharing the amplitudes' indices is the standing
+    example.  Self-loops (several ports on one tensor) are legal."""
 
-    ends: tuple  # ((node_index, port), (node_index, port)), sorted
+    ends: tuple  # ((node_index, port), ...), sorted, len >= 2
     space: str  # "o" / "v" / "g"
     monomer: str  # "A" / "B" / ""
 
@@ -125,9 +128,10 @@ def term_to_graph(term) -> TermGraph:
     """Encode one term (a ``Mul`` of a number and tensors, or a bare
     tensor) as a :class:`TermGraph`.
 
-    Raises ``ValueError`` on a dummy index shared by more than two
-    slots - that is not an Einstein contraction and the graph encoding
-    would be ambiguous.
+    An index in one slot is a free external; in two, an Einstein
+    contraction; in three or more, a Hadamard-style hyperedge (the
+    package's resolvent denominators share every index with the
+    amplitudes they divide).
     """
     factors = term.args if isinstance(term, Mul) else [term]
     coefficient = 1
@@ -169,18 +173,13 @@ def term_to_graph(term) -> TermGraph:
                     monomer=_monomer_of(index),
                 )
             )
-        elif len(ends) == 2:
+        else:
             edges.append(
                 Edge(
                     ends=tuple(sorted(ends)),
                     space=_space_of(index),
                     monomer=_monomer_of(index),
                 )
-            )
-        else:
-            raise ValueError(
-                f"index {index} appears in {len(ends)} slots; "
-                "an Einstein contraction pairs at most two."
             )
 
     upper, lower = [], []
@@ -211,13 +210,11 @@ def _relabelled_signature(graph: TermGraph, order) -> tuple:
     position = {old: new for new, old in enumerate(order)}
     edges = sorted(
         (
-            tuple(sorted(((position[n1], p1), (position[n2], p2)))),
+            tuple(sorted((position[n], p) for n, p in edge.ends)),
             edge.space,
             edge.monomer,
         )
-        for edge, ((n1, p1), (n2, p2)) in (
-            (e, e.ends) for e in graph.edges
-        )
+        for edge in graph.edges
     )
     externals = sorted(
         (position[x.node], x.port, x.name, x.space, x.monomer)
@@ -280,9 +277,9 @@ def invariants(graph: TermGraph) -> dict:
     )
     adjacency = {i: set() for i in range(len(graph.nodes))}
     for edge in graph.edges:
-        (n1, _), (n2, _) = edge.ends
-        adjacency[n1].add(n2)
-        adjacency[n2].add(n1)
+        members = {n for n, _ in edge.ends}
+        for n1 in members:
+            adjacency[n1].update(members - {n1})
     seen, stack = set(), [0] if graph.nodes else []
     while stack:
         node = stack.pop()
@@ -318,7 +315,7 @@ def classify(expr, key=canonical_key) -> dict:
     return buckets
 
 
-# --- contraction cost --------------------------------------------------
+# --- contraction cost ---------------------------------------------------
 
 
 def _dims_of(edge_or_external) -> str:
@@ -331,95 +328,96 @@ def contraction_cost(graph: TermGraph) -> dict:
 
     Dimensions stay symbolic - one per ``(monomer, space)`` label, e.g.
     ``Ao``, ``Av``, ``Bo`` - and the search over contraction orders is
-    exhaustive, which a term-sized network affords.  Returned as
+    exhaustive, which a term-sized network affords.  Bookkeeping is per
+    *index* (edge), so hyperedges and self-loops cost correctly: an
+    index dimension enters a cluster once, and is summed away only when
+    every slot holding it sits inside one cluster.  Returned as
     ``{"flops": {label: exponent, ...}, "memory": {...}, "order": [...]}``
     with costs compared by total degree, then lexicographically.
     """
-    # Each node's indices as multisets of dimension labels; edges
-    # between a pair contract away, everything else survives.
-    node_dims = []
-    for node_index in range(len(graph.nodes)):
-        dims = []
-        for edge in graph.edges:
-            hits = sum(1 for end_node, _ in edge.ends if end_node == node_index)
-            if hits:
-                # a self-edge (trace) is summable immediately: one power
-                dims.append(_dims_of(edge))
-        for external in graph.externals:
-            if external.node == node_index:
-                dims.append(_dims_of(external))
-        node_dims.append(Counter(dims))
+    if not graph.nodes:
+        return {"flops": {}, "memory": {}, "order": []}
 
-    shared = {}
-    for edge in graph.edges:
-        (n1, _), (n2, _) = edge.ends
-        if n1 != n2:
-            pair = (min(n1, n2), max(n1, n2))
-            shared.setdefault(pair, Counter())[_dims_of(edge)] += 1
+    edge_nodes = [
+        frozenset(node for node, _ in edge.ends) for edge in graph.edges
+    ]
+    external_nodes = [
+        (external.node, _dims_of(external)) for external in graph.externals
+    ]
 
-    def degree(counter):
-        return sum(counter.values())
+    def cluster_dims(members):
+        """dimension labels of the tensor holding ``members`` merged"""
+        dims = Counter()
+        for edge, holders in zip(graph.edges, edge_nodes):
+            if holders & members and not holders <= members:
+                dims[_dims_of(edge)] += 1
+        for node, label in external_nodes:
+            if node in members:
+                dims[label] += 1
+        return dims
+
+    def merge_cost(members):
+        """flops of forming ``members`` from any two parts: every index
+        touching the merged cluster, counted once"""
+        dims = Counter()
+        for edge, holders in zip(graph.edges, edge_nodes):
+            if holders & members:
+                dims[_dims_of(edge)] += 1
+        for node, label in external_nodes:
+            if node in members:
+                dims[label] += 1
+        return dims
 
     def rank(counter):
-        return (degree(counter), tuple(sorted(counter.items())))
+        return (sum(counter.values()), tuple(sorted(counter.items())))
 
     best = {"flops": None, "memory": None, "order": None}
 
-    def search(clusters, dims, flops, memory, order):
-        if len(dims) == 1:
+    def search(clusters, flops, memory, order):
+        if len(clusters) == 1:
             candidate = (rank(flops), rank(memory))
             if best["flops"] is None or candidate < (
                 rank(best["flops"]),
                 rank(best["memory"]),
             ):
-                best.update(
-                    flops=flops, memory=memory, order=list(order)
-                )
+                best.update(flops=flops, memory=memory, order=list(order))
             return
-        keys = sorted(dims)
+        keys = sorted(clusters)
         for i, key1 in enumerate(keys):
             for key2 in keys[i + 1:]:
-                contracted = Counter()
-                for cluster1 in clusters[key1]:
-                    for cluster2 in clusters[key2]:
-                        pair = (min(cluster1, cluster2), max(cluster1, cluster2))
-                        contracted.update(shared.get(pair, {}))
-                cost = dims[key1] + dims[key2]
-                for label, count in contracted.items():
-                    cost[label] -= count  # shared dims counted once
-                result = cost.copy()
-                for label, count in contracted.items():
-                    result[label] -= count  # and contracted away
-                result = +result
-                cost = +cost
-                new_key = f"({key1}.{key2})"
-                new_clusters = dict(clusters)
-                new_clusters[new_key] = (
-                    clusters[key1] + clusters[key2]
-                )
-                del new_clusters[key1], new_clusters[key2]
-                new_dims = dict(dims)
-                new_dims[new_key] = result
-                del new_dims[key1], new_dims[key2]
+                members = clusters[key1] | clusters[key2]
+                cost = merge_cost(members)
+                result = cluster_dims(members)
                 new_flops = flops.copy()
                 for label, count in cost.items():
                     new_flops[label] = max(new_flops[label], count)
                 new_memory = memory.copy()
                 for label, count in result.items():
                     new_memory[label] = max(new_memory[label], count)
+                new_clusters = {
+                    key: value
+                    for key, value in clusters.items()
+                    if key not in (key1, key2)
+                }
+                new_clusters[f"({key1}.{key2})"] = members
                 search(
                     new_clusters,
-                    new_dims,
                     new_flops,
                     new_memory,
-                    order + [new_key],
+                    order + [f"({key1}.{key2})"],
                 )
 
-    if not graph.nodes:
-        return {"flops": {}, "memory": {}, "order": []}
-    clusters = {str(i): (i,) for i in range(len(graph.nodes))}
-    dims = {str(i): node_dims[i] for i in range(len(graph.nodes))}
-    search(clusters, dims, Counter(), Counter(), [])
+    clusters = {
+        str(i): frozenset([i]) for i in range(len(graph.nodes))
+    }
+    if len(clusters) == 1:
+        only = clusters["0"]
+        return {
+            "flops": dict(sorted(merge_cost(only).items())),
+            "memory": dict(sorted(cluster_dims(only).items())),
+            "order": [],
+        }
+    search(clusters, Counter(), Counter(), [])
     return {
         "flops": dict(sorted((+best["flops"]).items())),
         "memory": dict(sorted((+best["memory"]).items())),
@@ -431,38 +429,30 @@ def contraction_cost(graph: TermGraph) -> dict:
 
 
 def _pair_subgraph(graph: TermGraph, n1: int, n2: int) -> TermGraph:
-    """The two-node subnetwork: mutual edges stay edges, every other
-    index of the pair becomes an anonymous external ("" name - dangling
-    position and character matter, the outside index name does not)."""
+    """The two-node subnetwork: an index whose every slot sits on the
+    pair stays an edge; an index also held outside cannot be summed by
+    the pair, so each of its inside slots becomes an anonymous external
+    ("" name - dangling position and character matter, the outside
+    index name does not)."""
     keep = {n1: 0, n2: 1}
     edges, externals = [], []
-    dangling = set(
-        (node, port)
-        for node in keep
-        for port in range(graph.nodes[node].n_ports)
-    )
+    covered = set()
     for edge in graph.edges:
-        (a, pa), (b, pb) = edge.ends
-        if a in keep and b in keep:
+        inside = [(n, p) for n, p in edge.ends if n in keep]
+        covered.update(inside)
+        if len(inside) == len(edge.ends):
             edges.append(
                 Edge(
-                    ends=tuple(sorted(((keep[a], pa), (keep[b], pb)))),
+                    ends=tuple(sorted((keep[n], p) for n, p in inside)),
                     space=edge.space,
                     monomer=edge.monomer,
                 )
             )
-            dangling.discard((a, pa))
-            dangling.discard((b, pb))
-        elif a in keep:
-            externals.append(
-                External(keep[a], pa, "", edge.space, edge.monomer)
-            )
-            dangling.discard((a, pa))
-        elif b in keep:
-            externals.append(
-                External(keep[b], pb, "", edge.space, edge.monomer)
-            )
-            dangling.discard((b, pb))
+        else:
+            for n, p in inside:
+                externals.append(
+                    External(keep[n], p, "", edge.space, edge.monomer)
+                )
     for external in graph.externals:
         if external.node in keep:
             externals.append(
@@ -474,8 +464,12 @@ def _pair_subgraph(graph: TermGraph, n1: int, n2: int) -> TermGraph:
                     external.monomer,
                 )
             )
-            dangling.discard((external.node, external.port))
-    assert not dangling
+            covered.add((external.node, external.port))
+    assert covered == {
+        (node, port)
+        for node in keep
+        for port in range(graph.nodes[node].n_ports)
+    }
     return TermGraph(
         coefficient=1,
         nodes=(graph.nodes[n1], graph.nodes[n2]),
@@ -490,16 +484,17 @@ def common_pairs(graphs, min_count: int = 2) -> list:
 
     Returns ``[(count, key, example)]`` sorted most-frequent first,
     where ``example`` is one :class:`TermGraph` of the pair.  Only
-    pairs actually contracted together (sharing at least one edge)
+    pairs actually joined by some index (an edge with slots on both)
     count; a mere co-occurrence is not an intermediate.
     """
     seen = {}
     for graph in graphs:
         contracted_pairs = set()
         for edge in graph.edges:
-            (a, _), (b, _) = edge.ends
-            if a != b:
-                contracted_pairs.add((min(a, b), max(a, b)))
+            members = sorted({n for n, _ in edge.ends})
+            for i, na in enumerate(members):
+                for nb in members[i + 1:]:
+                    contracted_pairs.add((na, nb))
         for n1, n2 in contracted_pairs:
             sub = _pair_subgraph(graph, n1, n2)
             key = canonical_key(sub)
@@ -526,8 +521,9 @@ def to_dict(graph: TermGraph) -> dict:
         ],
         "edges": [
             {
-                "from": [e.ends[0][0], graph.nodes[e.ends[0][0]].port_role(e.ends[0][1])],
-                "to": [e.ends[1][0], graph.nodes[e.ends[1][0]].port_role(e.ends[1][1])],
+                "ends": [
+                    [n, graph.nodes[n].port_role(p)] for n, p in e.ends
+                ],
                 "space": e.space,
                 "monomer": e.monomer,
             }
@@ -552,7 +548,8 @@ def to_dict(graph: TermGraph) -> dict:
 
 def to_dot(graph: TermGraph, name: str = "term") -> str:
     """Graphviz DOT: tensors as boxes, contractions as labelled edges,
-    externals as open circles."""
+    externals as open circles.  A hyperedge (an index on three or more
+    slots) renders through a small junction point."""
     lines = [f'graph "{name}" {{', "  node [shape=box];"]
     for i, node in enumerate(graph.nodes):
         lines.append(f'  t{i} [label="{node.name}"];')
@@ -564,13 +561,22 @@ def to_dot(graph: TermGraph, name: str = "term") -> str:
         lines.append(
             f'  t{x.node} -- x{j} [label="{role}:{x.monomer}{x.space}"];'
         )
-    for e in graph.edges:
-        (n1, p1), (n2, p2) = e.ends
-        role1 = graph.nodes[n1].port_role(p1)
-        role2 = graph.nodes[n2].port_role(p2)
-        lines.append(
-            f'  t{n1} -- t{n2} '
-            f'[label="{role1}-{role2}:{e.monomer}{e.space}"];'
-        )
+    for k, e in enumerate(graph.edges):
+        label = f"{e.monomer}{e.space}"
+        if len(e.ends) == 2:
+            (n1, p1), (n2, p2) = e.ends
+            role1 = graph.nodes[n1].port_role(p1)
+            role2 = graph.nodes[n2].port_role(p2)
+            lines.append(
+                f'  t{n1} -- t{n2} '
+                f'[label="{role1}-{role2}:{label}"];'
+            )
+        else:
+            lines.append(f'  h{k} [shape=point];')
+            for n, p in e.ends:
+                role = graph.nodes[n].port_role(p)
+                lines.append(
+                    f'  t{n} -- h{k} [label="{role}:{label}"];'
+                )
     lines.append("}")
     return "\n".join(lines)

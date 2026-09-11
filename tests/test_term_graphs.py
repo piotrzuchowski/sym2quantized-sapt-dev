@@ -124,14 +124,25 @@ def test_common_pairs_counts_recurring_contractions():
     assert tuple(n.name for n in example.nodes) == ("t", "v")
 
 
-def test_rejects_an_index_in_three_slots():
+def test_an_index_in_three_slots_is_a_hyperedge():
+    # the resolvent denominator shares every index with the amplitudes
+    # it divides - E_disp(20) is `e * v * v` with each index on three
+    # slots, and the encoding must carry that as one hyperedge
     a, i, b, j = _disp20_indices()
-    t = DoubleVacuumTensorSymbol("t", (i, j), (a, b))
-    v = DoubleVacuumTensorSymbol("v", (a, b), (i, j))
-    s = DoubleVacuumTensorSymbol("s", (a,), (i,))
+    e = DoubleVacuumTensorSymbol("e", (i, j), (a, b))
+    v_ket = DoubleVacuumTensorSymbol("v", (a, b), (i, j))
+    v_bra = DoubleVacuumTensorSymbol("v", (i, j), (a, b))
 
-    with pytest.raises(ValueError, match="3 slots"):
-        term_to_graph(t * v * s)
+    graph = term_to_graph(e * v_ket * v_bra)
+
+    assert len(graph.edges) == 4
+    assert all(len(edge.ends) == 3 for edge in graph.edges)
+    assert graph.externals == ()
+    assert invariants(graph)["connected"] is True
+
+    # one Hadamard evaluation: cost is the four dimensions, once
+    cost = contraction_cost(graph)
+    assert cost["flops"] == {"Ao": 1, "Av": 1, "Bo": 1, "Bv": 1}
 
 
 def test_exports_are_serializable_and_render():
