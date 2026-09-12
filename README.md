@@ -54,6 +54,11 @@ print(latex(E10))
 See the [`examples/`](examples/) directory for full derivations of the
 electrostatic, induction, dispersion, and exchange energies.
 
+Starting a project with this package?  [GETTING_STARTED.md](GETTING_STARTED.md)
+covers the environment, which branch to start from, the shape of a
+derivation script, and the conventions that cost debugging time when
+they are violated.
+
 ## Running the tests
 
 ```shell
