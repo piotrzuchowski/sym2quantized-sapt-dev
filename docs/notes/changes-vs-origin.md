@@ -1,9 +1,10 @@
-# Changes with respect to origin (2026-09-11)
+# Changes with respect to origin (updated 2026-09-12)
 
 Work done in this clone on top of `origin/main` (`675c0aa`) and
 `origin/feature/density_fitting` (`df29562`), by Claude Code sessions
-driven by a downstream user of the package.  Nothing has been pushed;
-each stream sits on its own local branch for review.  The downstream
+driven by a downstream user of the package.  Each stream sits on its
+own branch for review, published on the fork
+`piotrzuchowski/sym2quantized-sapt-dev`.  The downstream
 application (a SAPT dispersion code) is referred to only as the test
 bed — nothing in these changes assumes or requires its theory.
 
@@ -62,6 +63,36 @@ straddling monomers, which the per-pair check cannot see (each pair of
 a v-style split sits on one monomer).  Four new tests.  Validated
 downstream: the factorized output of a 20-term derivation equals its
 dense evaluation to ~1e-15 relative.
+
+## `feature/uhf-spin-summation` (off `main`)
+
+Open-shell support, validated against psi4 at every step (numeric
+records live in the downstream application's `docs/RESULTS_UHF_*.md`).
+
+- **Spin tags** (`is_alpha` / `is_beta`): the monomer-tag mechanism
+  applied to spin -- `contraction_double_vac` vanishes across
+  opposite tags, and the Wick fallback's fresh summation dummies
+  inherit the shared tag (a bubble otherwise silently sums both
+  spins).  With per-sector resolvent normalisation (`1/(n!)^2` per
+  same-spin pair group, distinguishable pairs unpermuted), UMP2 and
+  UMP3 match psi4's conventional UHF-MP2/MP3 to ~1e-15 / ~5e-13 on
+  doublet, triplet and quartet references; SAPT's disp20 matches
+  open-shell SAPT0 to machine zero; exch-disp20 (S^2) matches psi4's
+  S^2 modules to 6e-20 at closed shell; the full blocked CCPP2
+  equations reduce to the validated closed-shell result to 6e-13.
+- **`spin_integration_uhf` / `rhf_collapse`** in
+  `spin_integrator.py`: per-Goldstone-loop spin summation
+  (`_loop_partition` now exposes the membership `_count_loops`
+  always computed; RHF path unchanged).  Valid for
+  single-pair-per-space projections; carries a prominent warning that
+  multi-pair resolvents need the tags instead -- a benchmark-caught
+  limitation, pinned by the `ump2_ump3_uhf.py` example, which also
+  demonstrates the tagged route.
+- **`code_generator.array_table`**: defines every emitted array axis
+  by axis (base, upper/lower role, space, monomer, spin from tag or
+  block label) -- the missing half of code generation, letting numeric
+  code build spin-blocked arrays mechanically.
+- New tests throughout; the module suites pass.
 
 ## Pre-existing issue observed (fixed on `feature/term-graphs`)
 
