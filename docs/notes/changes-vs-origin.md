@@ -88,10 +88,9 @@ records live in the downstream application's `docs/RESULTS_UHF_*.md`).
   open-shell SAPT0 to machine zero; exch-disp20 (S^2) matches psi4's
   S^2 modules to 6e-20 at closed shell; the full blocked CCPP2
   equations reduce to the validated closed-shell result to 6e-13.
-- **`spin_integration_uhf` / `rhf_collapse`** in
-  `spin_integrator.py`: per-Goldstone-loop spin summation
-  (`_loop_partition` now exposes the membership `_count_loops`
-  always computed; RHF path unchanged).  Valid for
+- **`spin_integration_uhf` / `rhf_collapse`**: per-Goldstone-loop spin
+  summation, keyed off the `_loop_partition` refactor that exposes the
+  membership `_count_loops` always computed (RHF path unchanged).  Valid for
   single-pair-per-space projections; carries a prominent warning that
   multi-pair resolvents need the tags instead -- a benchmark-caught
   limitation, pinned by the `ump2_ump3_uhf.py` example, which also
