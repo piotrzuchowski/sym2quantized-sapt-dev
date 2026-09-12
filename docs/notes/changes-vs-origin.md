@@ -69,6 +69,14 @@ dense evaluation to ~1e-15 relative.
 Open-shell support, validated against psi4 at every step (numeric
 records live in the downstream application's `docs/RESULTS_UHF_*.md`).
 
+- **`open_shell.py`** holds every open-shell addition, so the existing
+  modules keep small, reviewable diffs: `spin_integrator.py` gains only
+  the `_loop_partition` refactor (no behaviour change -- it exposes the
+  loop membership `_count_loops` was already computing), and
+  `double_fermi_vac.py` only an import plus the two-line tag guard.
+  `array_table` deliberately stays in `code_generator.py`: it describes
+  the arrays the generator emits for *any* expression, blocked or not,
+  and downstream code imports it from there.
 - **Spin tags** (`is_alpha` / `is_beta`): the monomer-tag mechanism
   applied to spin -- `contraction_double_vac` vanishes across
   opposite tags, and the Wick fallback's fresh summation dummies

@@ -128,6 +128,9 @@ expensive to rediscover.
 
 Two routes, and choosing wrongly is a documented trap.
 
+Both routes live in `sym2quantized_sapt/open_shell.py`; the restricted
+path in `spin_integrator.py` is untouched by either.
+
 **Spin tags** (`is_alpha` / `is_beta`) are the general route: they are
 the monomer-tag mechanism applied to spin, so contractions vanish
 across opposite tags and Wick's theorem does the bookkeeping exactly.
